@@ -13,6 +13,7 @@ function log(expected, label) {
 }
 
 // Set a breakpoint here to inspect the call stack.
+// Debugger pauses can change asynchronous execution order.
 function checkpoint(expected, label) {
   log(expected, label);
 }
@@ -21,22 +22,22 @@ function checkpoint(expected, label) {
 // 1. SYNCHRONOUS EXECUTION
 // ======================================================
 
-checkpoint("01", "SYNC: script started"); // #01 — Executes immediately.
+checkpoint("01", "SYNC: script started"); // #01 — First synchronous statement.
 
 process.nextTick(() => {
-  checkpoint("05", "NEXT TICK: top-level"); // #05 — After ESM microtasks.
+  checkpoint("05", "NEXT TICK: top-level"); // #05 — After top-level ESM microtasks.
 
   process.nextTick(() => {
-    checkpoint("06", "NEXT TICK: nested"); // #06 — After parent nextTick.
+    checkpoint("06", "NEXT TICK: nested"); // #06 — Next-tick queue drains recursively.
   });
 });
 
 queueMicrotask(() => {
-  checkpoint("03", "MICROTASK: queueMicrotask"); // #03 — First microtask.
+  checkpoint("03", "MICROTASK: queueMicrotask"); // #03 — First queued ESM microtask.
 });
 
 Promise.resolve().then(() => {
-  checkpoint("04", "MICROTASK: Promise.then"); // #04 — Second microtask.
+  checkpoint("04", "MICROTASK: Promise.then"); // #04 — Second queued ESM microtask.
 });
 
 // ======================================================
@@ -44,18 +45,18 @@ Promise.resolve().then(() => {
 // ======================================================
 
 setTimeout(() => {
-  checkpoint("~07", "TIMERS: setTimeout(0)"); // #07? — May execute before or after immediate.
+  checkpoint("~09", "TIMERS: setTimeout(0)"); // #09 — Timer eligible after minimum delay.
 
   process.nextTick(() => {
-    checkpoint("~08", "NEXT TICK: inside timer"); // #08? — After timer callback.
+    checkpoint("~10", "NEXT TICK: inside timer"); // #10 — Runs after timer callback returns.
   });
 
   Promise.resolve().then(() => {
-    checkpoint("~09", "MICROTASK: inside timer"); // #09? — After nextTick.
+    checkpoint("~11", "MICROTASK: inside timer"); // #11 — Runs after the timer's nextTick.
   });
 
   setImmediate(() => {
-    checkpoint("~12", "CHECK: setImmediate created in timer"); // #12? — Later check phase.
+    checkpoint("~13", "CHECK: setImmediate created in timer"); // #13 — Executes in a later Check phase.
   });
 }, 0);
 
@@ -64,7 +65,7 @@ setTimeout(() => {
 // ======================================================
 
 setImmediate(() => {
-  checkpoint("~10", "CHECK: top-level setImmediate"); // #10? — Order relative to timer varies.
+  checkpoint("~12", "CHECK: top-level setImmediate"); // #12 — Check phase; may precede top-level timer.
 });
 
 // ======================================================
@@ -72,39 +73,39 @@ setImmediate(() => {
 // ======================================================
 
 fs.readFile(new URL(import.meta.url), () => {
-  checkpoint("~13", "POLL: fs.readFile callback"); // #13? — Filesystem I/O completed.
+  checkpoint("~14", "POLL: fs.readFile callback"); // #14 — I/O completion callback; may run in a later loop iteration.
 
   process.nextTick(() => {
-    checkpoint("~14", "NEXT TICK: inside I/O"); // #14? — After I/O callback.
+    checkpoint("~15", "NEXT TICK: inside I/O"); // #15 — Runs after the I/O callback returns.
   });
 
   queueMicrotask(() => {
-    checkpoint("~15", "MICROTASK: inside I/O"); // #15? — After nextTick.
+    checkpoint("~16", "MICROTASK: inside I/O"); // #16 — Runs after nextTick queue drains.
   });
 
   setTimeout(() => {
-    checkpoint("~17", "TIMERS: setTimeout created in I/O"); // #17? — Later timers phase.
+    checkpoint("~18", "TIMERS: setTimeout created in I/O"); // #18 — Timer eligible in a later iteration.
   }, 0);
 
   setImmediate(() => {
-    checkpoint("~16", "CHECK: setImmediate created in I/O"); // #16? — Normally before I/O timer.
+    checkpoint("~17", "CHECK: setImmediate created in I/O"); // #17 — Runs in Check, normally before the I/O timer.
   });
 });
 
 // ======================================================
-// 5. CLOSE CALLBACKS PHASE
+// 5. SERVER EVENTS - NEXT-TICK SCHEDULING
 // ======================================================
 
 const server = net.createServer();
 
 server.listen(0, "127.0.0.1", () => {
-  checkpoint("~11", "I/O: server listening"); // #11? — Listening callback.
+  checkpoint("~07", "NEXT TICK: server listening"); // #07 — net.js schedules emitListeningNT via nextTick.
 
   server.close();
 });
 
 server.on("close", () => {
-  checkpoint("~18", "CLOSE CALLBACKS: server closed"); // #18? — Server closed.
+  checkpoint("~08", "NEXT TICK: server closed"); // #08 — With no connections, net.js schedules emitCloseNT via nextTick.
 });
 
 // ======================================================
@@ -112,15 +113,16 @@ server.on("close", () => {
 // ======================================================
 
 setTimeout(() => {
-  checkpoint("~19", "BLOCKING: start 100ms CPU work"); // #19? — After at least 30ms.
+  checkpoint("~19", "BLOCKING: start 100ms CPU work"); // #19 — Timer becomes eligible after at least 30ms.
 
   const until = performance.now() + 100;
 
   while (performance.now() < until) {
-    // Main JS thread intentionally blocked.
+    // Blocks the main JS thread.
+    // No timers, I/O callbacks, or microtasks can execute here.
   }
 
-  checkpoint("~20", "BLOCKING: finished CPU work"); // #20? — 100ms later.
+  checkpoint("~20", "BLOCKING: finished CPU work"); // #20 — Synchronous CPU work completes ~100ms later.
 }, 30);
 
 // ======================================================
@@ -132,11 +134,11 @@ let ticks = 0;
 const interval = setInterval(() => {
   const tick = ++ticks;
 
-  checkpoint(`~${20 + tick}`, `TIMERS: interval tick ${tick}`); // #21–23? — Timer callbacks, potentially delayed.
+  checkpoint(`~${20 + tick}`, `TIMERS: interval tick ${tick}`); // #21–23 — Interval callbacks; can be delayed by blocking work.
 
   if (ticks === 3) {
     clearInterval(interval);
-    checkpoint("~24", "TIMERS: interval cleared"); // #24? — Stop repeating.
+    checkpoint("~24", "TIMERS: interval cleared"); // #24 — Clears interval synchronously during tick 3.
   }
 }, 50);
 
