@@ -5,7 +5,7 @@
       "type": "node",
       "request": "launch",
       "name": "Debug Node Internals",
-      "program": "${workspaceFolder}/event-loop.mjs",
+      "program": "${workspaceFolder}/promises/promise-waiters.mjs",
       "skipFiles": []
     }
   ]
